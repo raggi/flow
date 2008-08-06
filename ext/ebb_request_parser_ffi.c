@@ -199,7 +199,7 @@ body_handler(ebb_request *request, const char *at, size_t length)
 {
   VALUE rb_request = (VALUE)request->data; 
   VALUE chunk = rb_str_new(at, length);
-  rb_funcall(rb_request, rb_intern("on_body"), chunk);
+  rb_funcall(rb_request, rb_intern("on_body"), 1, chunk);
 }
 
 static void 
@@ -207,6 +207,7 @@ request_complete(ebb_request *request)
 {
   VALUE rb_request = (VALUE)request->data; 
   rb_iv_set(rb_request, "@body_complete", Qtrue);
+  rb_funcall(rb_request, rb_intern("on_complete"), 0, 0);
 }
 
 static ebb_request* new_request(void *data)

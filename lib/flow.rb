@@ -56,12 +56,9 @@ module Flow
     end
 
     def on_request(request)
-      # XXX automatically defer large uploads? 
-      if @app.respond_to?(:deferred?) and @app.deferred?(request.env)
-        puts "deferred"
-        Thread.new(request) { |req| process(req) }
-      else
-        process(request)
+      fiber = Fiber.new { process(request) }
+      if fiber.resume == :wait_for_read
+        request.fiber = fiber
       end
     end
 
@@ -202,21 +199,44 @@ module Ebb
         'rack.multiprocess' => false,
         'rack.run_once' => false
       }
-
-      def initialize
-        @input = Rev::Buffer.new
-      end
+      attr_accessor :fiber
 
       def env
         @env ||= begin
+          @nread = 0
+          @input = Rev::Buffer.new
           env = @env_ffi.update(BASE_ENV)
-          env["rack.input"] = @input
+          env["rack.input"] = self
+          env["CONTENT_LENGTH"] = env["HTTP_CONTENT_LENGTH"]
           env
+        end
+      end
+
+      def read(len = nil)
+        if @input.size == 0
+          if @body_complete
+            @fiber = nil
+            nil
+          else
+            Fiber.yield(:wait_for_read)
+            ""
+          end
+        else
+          @input.read(len)
         end
       end
 
       def on_body(chunk)
         @input.append(chunk)
+        if @fiber
+          @fiber = nil if @fiber.resume != :wait_for_read
+        end
+      end
+
+      def on_complete
+        if @fiber
+          @fiber = nil if @fiber.resume != :wait_for_read
+        end
       end
     end
   end
