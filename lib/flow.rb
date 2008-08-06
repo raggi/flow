@@ -1,3 +1,5 @@
+# copyright ryah dahl all rights reserved
+#
 require 'rubygems'
 require 'rev'
 require File.dirname(__FILE__) + "/../ext/ebb_request_parser_ffi"
@@ -203,8 +205,6 @@ module Ebb
 
       def env
         @env ||= begin
-          @nread = 0
-          @input = Rev::Buffer.new
           env = @env_ffi.update(BASE_ENV)
           env["rack.input"] = self
           env["CONTENT_LENGTH"] = env["HTTP_CONTENT_LENGTH"]
@@ -212,8 +212,12 @@ module Ebb
         end
       end
 
+      def input
+        @input ||= Rev::Buffer.new
+      end
+
       def read(len = nil)
-        if @input.size == 0
+        if input.size == 0
           if @body_complete
             @fiber = nil
             nil
@@ -222,12 +226,12 @@ module Ebb
             ""
           end
         else
-          @input.read(len)
+          input.read(len)
         end
       end
 
       def on_body(chunk)
-        @input.append(chunk)
+        input.append(chunk)
         if @fiber
           @fiber = nil if @fiber.resume != :wait_for_read
         end
