@@ -2,6 +2,7 @@ require 'rubygems'
 require 'rev'
 require File.dirname(__FILE__) + "/../ext/ebb_request_parser_ffi"
 
+$i = 0
 module Flow
 
   # The only public method
@@ -46,12 +47,11 @@ module Flow
     end
 
     def on_close
-      @timeout.detach
+      @timeout.detach if @timeout.attached?
     end
 
     def on_timeout
-      puts "timeout"
-      @timeout.detach
+      puts "timeout #{$i += 1}"
       close
     end
 
@@ -117,10 +117,11 @@ module Flow
     class Timeout < Rev::TimerWatcher
       def initialize(connection, timeout)
         @connection = connection
-        super(timeout)
+        super(timeout, false)
       end
 
       def on_timer
+        detach
         @connection.__send__(:on_timeout)
       end
     end
