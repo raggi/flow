@@ -45,22 +45,29 @@ module Flow
       super(evloop)
     end
 
+    def on_close
+      @timeout.detach
+    end
+
     def on_timeout
+      puts "timeout"
+      @timeout.detach
       close
     end
 
     def on_request(request)
       # XXX automatically defer large uploads? 
-      #if @app.respond_to?(:deferred?) and !@app.deferred?(request.env)
+      if @app.respond_to?(:deferred?) and @app.deferred?(request.env)
+        puts "deferred"
+        Thread.new(request) { |req| process(req) }
+      else
         process(request)
-      #else
-      #  Thread.new(request) { |req| process(req) }
-      #end
+      end
     end
 
     def process(req)
       @requests << req
-      p req.env
+      # p req.env
       status, headers, body = @app.call(req.env)
       res = Response.new(status, headers, body)
       res.last = !req.keep_alive?
@@ -201,7 +208,9 @@ module Ebb
 
       def env
         @env ||= begin
-          @env_ffi.update(BASE_ENV)
+          env = @env_ffi.update(BASE_ENV)
+          env["rack.input"] = @input
+          env
         end
       end
 
