@@ -38,12 +38,8 @@ module Flow
 
     def initialize(socket, app)
       @app = app
-
       @timeout = Timeout.new(self, TIMEOUT) 
-
       @parser = Ebb::RequestParser.new(self)
-
-      @requests = []
       @responses = []
       super(socket)
     end
@@ -73,7 +69,6 @@ module Flow
     end
 
     def process(req)
-      @requests << req
       res = req.response
       status, headers, body = @app.call(req.env)
 
@@ -81,6 +76,9 @@ module Flow
       # check out
       # http://github.com/raggi/thin/tree/async_for_rack/example/async_app.ru
       res.call(status, headers, body) if status != 0 
+      # if status == 0 then the application promises to call
+      # env['async.callback'].call(status, headers, body) 
+      # later on...
 
       @responses << res
       write_response
@@ -88,21 +86,20 @@ module Flow
 
     def write_response
       return unless res = @responses.first
-      if res.finished?
-        @responses.shift
-        if res.last
-          close
-        else
-          write_response
-        end
-      else 
-        while chunk = res.output.shift
-          write(chunk)
-        end
+      while chunk = res.output.shift
+        write(chunk)
       end
     end
 
     def on_write_complete
+      return unless res = @responses.first
+      if res.finished
+        @responses.shift
+        if res.last 
+          close 
+          return
+        end
+      end 
       write_response
     end
 
@@ -136,30 +133,39 @@ module Flow
       @chunked = false 
     end
 
-    def finished?
-      @finished 
-    end
-
     def call(status, headers, body)
-      head = "HTTP/1.1 #{status} #{HTTP_STATUS_CODES[status.to_i]}\r\n"
-      headers.each { |field, value| head << "#{field}: #{value}\r\n" }
-      head << "\r\n"
-      @output << head
+      @output << "HTTP/1.1 #{status} #{HTTP_STATUS_CODES[status.to_i]}\r\n"
+      headers.each { |field, value| @output << "#{field}: #{value}\r\n" }
+      @output << "\r\n"
 
       # XXX i would prefer to do
       # @chunked = true unless body.respond_to?(:length)
-      @chunked = true if headers["Content-Encoding"] == "chunked"
+      @chunked = true if headers["Transfer-Encoding"] == "chunked"
+      # I also don't like this
+      @last = true if headers["Connection"] == "close"
+
+      # Note: not setting Content-Length. do it yourself.
+      
+      ## XXX Have to do this so it is known when end is recieved!
+      if body.kind_of?(Array) and body.last != nil
+        body.push(nil)
+      end
 
       body.each do |chunk|
-        @output << encode(chunk)
-        @finished = true if chunk.nil?
+        if chunk.nil? or 
+           (body.respond_to?(:eof?) and body.eof?) ## XXX annoying. need to know end.
+        then
+          @finished = true 
+          @output << "0\r\n\r\n" if @chunked
+        else
+          @output << encode(chunk)
+        end
         @connection.write_response
       end
     end
     
     def encode(chunk)
-      c = chunk || "" # encodes a nil chunk too
-      @chunked ?  "#{c.length.to_s(16)}\r\n#{c}\r\n" : c
+      @chunked ? "#{chunk.length.to_s(16)}\r\n#{chunk}\r\n" : chunk
     end
 
     HTTP_STATUS_CODES = {
@@ -233,7 +239,7 @@ module Ebb
 
       def response
         @response ||= begin
-          last = !keep_alive?
+          last = !keep_alive? # this is the last response if the request isnt keep-alive
           Flow::Response.new(@connection, last)
         end
       end

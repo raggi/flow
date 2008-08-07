@@ -75,7 +75,7 @@ class SimpleApp
     end
     
     body += "\r\n"
-    headers = {'Content-Type' => 'text/plain', 'Content-Length' => body.length.to_s }
+    headers = {'Content-Type' => 'text/plain', 'Transfer-Encoding' => "chunked" }
     [status, headers, [body]]
   end
 end
