@@ -11,6 +11,15 @@ module Flow
   #
   # grass and breadcrumbs and water flow 
   # in the darkness for you
+  #
+  #
+  # dear reader, your rack application should have a method
+  # :call. This method should return a triple:
+  #   [status, headers, body]
+  # Flow prefers that you use body.shift to return chunks of 
+  # the response. 
+  #
+  # Feel free to 
   def self.start_server(evloop, app, options = {})
     socket = TCPServer.new("localhost", (options[:port] || 4001).to_i)
     server = Flow::Server.new(socket, app)
@@ -56,6 +65,7 @@ module Flow
     end
 
     def on_request(request)
+      request.connection = self
       fiber = Fiber.new { process(request) }
       if fiber.resume == :wait_for_read
         request.fiber = fiber
@@ -64,43 +74,36 @@ module Flow
 
     def process(req)
       @requests << req
-      # p req.env
+      res = req.response
       status, headers, body = @app.call(req.env)
-      res = Response.new(status, headers, body)
-      res.last = !req.keep_alive?
 
-      # FIXME
-      unless body.respond_to?(:shift)
-        if body.kind_of?(String)
-          body = [body]
-        else
-          b = []
-          body.each { |chunk| b << chunk }
-          body = b
-        end
-      end
+      # James Tucker's async response scheme
+      # check out
+      # http://github.com/raggi/thin/tree/async_for_rack/example/async_app.ru
+      res.call(status, headers, body) if status != 0 
 
       @responses << res
-      start_writing if @responses.length == 1 
+      write_response
     end
 
-    def start_writing
-      write(@responses.first.chunk) 
+    def write_response
+      return unless res = @responses.first
+      if res.finished?
+        @responses.shift
+        if res.last
+          close
+        else
+          write_response
+        end
+      else 
+        while chunk = res.output.shift
+          write(chunk)
+        end
+      end
     end
 
     def on_write_complete
-      if res = @responses.first
-        if chunk = res.shift
-          write(chunk)
-        else
-          if res.last
-            close 
-          else
-            @responses.shift
-            on_write_complete
-          end
-        end
-      end
+      write_response
     end
 
     def on_read(data)
@@ -123,21 +126,40 @@ module Flow
   end
 
   class Response
-    attr_reader :chunk
+    attr_reader :output, :finished
     attr_accessor :last
-    def initialize(status, headers, body)
-      @body = body
-      @chunk = "HTTP/1.1 #{status} #{HTTP_STATUS_CODES[status.to_i]}\r\n"
-      headers.each { |field, value| @chunk << "#{field}: #{value}\r\n" }
-      @chunk << "\r\n#{@body.shift}" 
-      @last = false
+    def initialize(connection, last)
+      @connection = connection
+      @last = last
+      @output = []
+      @finished = false
+      @chunked = false 
     end
 
-    # if returns nil, there is nothing else to write
-    # otherwise returns then next chunk needed to write.
-    # on writable call connection.write(response.shift) 
-    def shift
-      @chunk = @body.shift
+    def finished?
+      @finished 
+    end
+
+    def call(status, headers, body)
+      head = "HTTP/1.1 #{status} #{HTTP_STATUS_CODES[status.to_i]}\r\n"
+      headers.each { |field, value| head << "#{field}: #{value}\r\n" }
+      head << "\r\n"
+      @output << head
+
+      # XXX i would prefer to do
+      # @chunked = true unless body.respond_to?(:length)
+      @chunked = true if headers["Content-Encoding"] == "chunked"
+
+      body.each do |chunk|
+        @output << encode(chunk)
+        @finished = true if chunk.nil?
+        @connection.write_response
+      end
+    end
+    
+    def encode(chunk)
+      c = chunk || "" # encodes a nil chunk too
+      @chunked ?  "#{c.length.to_s(16)}\r\n#{c}\r\n" : c
     end
 
     HTTP_STATUS_CODES = {
@@ -197,20 +219,29 @@ module Ebb
         'rack.multiprocess' => false,
         'rack.run_once' => false
       }
-      attr_accessor :fiber
+      attr_accessor :fiber, :connection
 
       def env
         @env ||= begin
           env = @env_ffi.update(BASE_ENV)
           env["rack.input"] = self
           env["CONTENT_LENGTH"] = env["HTTP_CONTENT_LENGTH"]
+          env["async.callback"] = response
           env
+        end
+      end
+
+      def response
+        @response ||= begin
+          last = !keep_alive?
+          Flow::Response.new(@connection, last)
         end
       end
 
       def input
         @input ||= Rev::Buffer.new
       end
+
 
       def read(len = nil)
         if input.size == 0
@@ -225,6 +256,8 @@ module Ebb
           input.read(len)
         end
       end
+
+      # XXX hacky...
 
       def on_body(chunk)
         input.append(chunk)
