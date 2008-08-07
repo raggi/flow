@@ -11,15 +11,6 @@ module Flow
   #
   # grass and breadcrumbs and water flow 
   # in the darkness for you
-  #
-  #
-  # dear reader, your rack application should have a method
-  # :call. This method should return a triple:
-  #   [status, headers, body]
-  # Flow prefers that you use body.shift to return chunks of 
-  # the response. 
-  #
-  # Feel free to 
   def self.start_server(evloop, app, options = {})
     socket = TCPServer.new("localhost", (options[:port] || 4001).to_i)
     server = Flow::Server.new(socket, app)
