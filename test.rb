@@ -1,16 +1,8 @@
 require 'rubygems'
 require 'rev'
-require File.dirname(__FILE__) + "/lib/flow"
 
-
-class DeferredBody
-  def call(chunk)
-    @callback.call(chunk)
-  end
-
-  def each(&block)
-    @callback = block
-  end
+%w[flow deferrable deferrable_body].each do |r|
+  require File.dirname(__FILE__) + "/lib/" + r
 end
 
 class Delay < Rev::TimerWatcher
@@ -35,10 +27,13 @@ end
 class App
   def initialize(evloop)
     @evloop = evloop
+  rescue
+    p $!, $!.message
+    puts $!.backtrace.join("\n")
   end
   
   def call(env)
-    body = DeferredBody.new 
+    body = DeferrableBody.new 
 
     Delay.create(@evloop, 0.5) do 
       env['async.callback'].call(
@@ -54,10 +49,13 @@ class App
 
     Delay.create(@evloop, 1.5) do 
       body.call "world\n" 
-      body.call nil
+      body.succeed
     end
 
     [0, nil, nil]
+  rescue
+    p $!, $!.message
+    puts $!.backtrace.join("\n")
   end
 end
 

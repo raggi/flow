@@ -59,25 +59,36 @@ module Flow
       end
     end
 
+    # This is a template async response. N.B. Can't use string for body on 1.9
+    AsyncStatus = 0
+    AsyncResponse = [AsyncStatus, {}, []].freeze
+    
     def process(req)
-      res = req.response
-      status, headers, body = @app.call(req.env)
-
-      # James Tucker's async response scheme
-      # check out
-      # http://github.com/raggi/thin/tree/async_for_rack/example/async_app.ru
-      res.call(status, headers, body) if status != 0 
-      # if status == 0 then the application promises to call
-      # env['async.callback'].call(status, headers, body) 
-      # later on...
-
-      @responses << res
+      # Setup our response processing callback for async status and headers.
+      req.env['async.callback'] = proc { |response| queue_response(req, response) }
+      
+      # for non-async capable frameworks, where we can't give back and async
+      # response.
+      response = AsyncResponse
+      catch(:async) do
+        # Use a single variable, in case we get a Rack::Response object...
+        response = @app.call(req.env)
+      end
+      
+      # queue the response unless we're going async...
+      queue_response(req, response) unless response.to_a.first == AsyncStatus
+    end
+    
+    def queue_response(req, response)
+      req.res.call(*response.to_a)
+      @responses << req.res
       write_response
     end
 
     def write_response
       return unless res = @responses.first
-      while chunk = res.output.shift
+      
+      res.output.each do |chunk|
         write(chunk)
       end
     end
@@ -138,19 +149,22 @@ module Flow
       # Note: not setting Content-Length. do it yourself.
       
       ## XXX Have to do this so it is known when end is recieved!
-      if body.kind_of?(Array) and body.last != nil
-        body.push(nil)
-      end
-
-      body.each do |chunk|
-        if chunk.nil? or 
-           (body.respond_to?(:eof?) and body.eof?) ## XXX annoying. need to know end.
-        then
-          @finished = true 
-          @output << "0\r\n\r\n" if @chunked
-        else
-          @output << encode(chunk)
+      if body.respond_to?(:callback)
+        body.callback do
+          @finished = true
+          @output << "0\r\n\r\n"
         end
+      end
+      if body.respond_to?(:errback)
+        body.errback do
+          # TODO / XXX - probably want to close connection here...
+          @finished = true
+          @output << "0\r\n\r\n"
+        end
+      end
+      
+      body.each do |chunk|
+        @output << encode(chunk)
         @connection.write_response
       end
     end

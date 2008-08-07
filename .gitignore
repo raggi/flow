@@ -1,0 +1,12 @@
+ext/*.o
+ext/*.bundle
+ext/*.so
+ext/*.obj
+ext/*.pdb
+ext/*.lib
+ext/*.def
+ext/*.exp
+ext/*.xml
+ext/ebb_request_parser.c
+ext/Makefile
+ext/mkmf.log
